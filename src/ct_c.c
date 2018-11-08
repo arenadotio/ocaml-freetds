@@ -31,6 +31,7 @@
 #include <caml/memory.h>
 #include <caml/fail.h>
 #include <caml/custom.h>
+#include <caml/threads.h>
 
 void mltds_ct_ctx_finalize(value ctx);
 void mltds_ct_con_finalize(value conn);
@@ -450,15 +451,23 @@ CAMLprim value mltds_ct_con_setstring(value conn, value field, value newval)
     CAMLreturn(Val_unit);
 }
 
-CAMLprim value mltds_ct_connect(value connection, value servername)
+CAMLprim value mltds_ct_connect(value vconnection, value vservername)
 {
-    CAMLparam2(connection, servername);
+    CAMLparam2(vconnection, vservername);
+    CS_CONNECTION* connection = connection_ptr(vconnection);
+    CS_INT servernamelen = caml_string_length(vservername);
 
-    retval_inspect( "ct_connect",
-                    ct_connect(connection_ptr(connection), 
-                               String_val(servername), 
-                               string_length(servername)));
-    
+    // Have to copy input string params before releasing the runtime lock
+    // because this string could be moved by the garbage collector
+    CS_CHAR* servername = caml_stat_alloc(servernamelen);
+    memcpy(servername, String_val(vservername), servernamelen);
+
+    caml_release_runtime_system();
+    CS_RETCODE ret = ct_connect(connection, servername, servernamelen);
+    caml_stat_free(servername);
+    caml_acquire_runtime_system();
+
+    retval_inspect("ct_connect", ret);
     CAMLreturn(Val_unit);
 }
 
@@ -481,7 +490,11 @@ CAMLprim value mltds_ct_command(value cmd, value cmdtype, value option, value te
 CAMLprim value mltds_ct_send(value cmd)
 {
     CAMLparam1(cmd);
-    retval_inspect( "ct_send", ct_send(command_ptr(cmd)));
+    CS_COMMAND* command = command_ptr(cmd);
+    caml_release_runtime_system();
+    CS_RETCODE retval = ct_send(command);
+    caml_acquire_runtime_system();
+    retval_inspect("ct_send", retval);
     CAMLreturn( Val_unit );
 }
 
@@ -489,8 +502,12 @@ CAMLprim value mltds_ct_results(value cmd)
 {
     CAMLparam1(cmd);
     CS_INT restype;
-    
-    retval_inspect( "ct_results", ct_results(command_ptr(cmd), &restype) );
+    CS_COMMAND *command = command_ptr(cmd);
+
+    caml_release_runtime_system();
+    CS_RETCODE retval = ct_results(command, &restype);
+    caml_acquire_runtime_system();
+    retval_inspect("ct_results", retval);
 
     CAMLreturn(value_of_restype(restype));
 }
@@ -680,33 +697,34 @@ CAMLprim value mltds_buffer_contents( value buffer )
     }
 }
 
-CAMLprim value mltds_ct_fetch( value cmd )
+CAMLprim value mltds_ct_fetch( value vcmd )
 {
-    CAMLparam1(cmd);
+    CAMLparam1(vcmd);
+    CS_COMMAND* cmd = command_ptr(vcmd);
     CS_INT rows_read;
 
+    caml_release_runtime_system();
     /* These are actually CS_UNUSED according to the docs! */
-    retval_inspect( "ct_fetch",
-                    ct_fetch(command_ptr(cmd),
-                             CS_UNUSED,
-                             CS_UNUSED,
-                             CS_UNUSED,
-                             &rows_read) );
+    CS_RETCODE ret = ct_fetch(cmd, CS_UNUSED, CS_UNUSED, CS_UNUSED, &rows_read);
+    caml_acquire_runtime_system();
 
+    retval_inspect("ct_fetch", ret);
     CAMLreturn(Val_int(rows_read));
 }
 
 /* Since only one option is meaningful, simplify to a bool */
-CAMLprim value mltds_ct_close( value conn, value force )
+CAMLprim value mltds_ct_close( value vconn, value force )
 {
-    CAMLparam2(conn, force);
+    CAMLparam2(vconn, force);
+    CS_CONNECTION* conn = connection_ptr(vconn);
     CS_INT option = CS_UNUSED;
     if ( Bool_val(force) ) option = CS_FORCE_CLOSE;
 
-    retval_inspect( "ct_close",
-                    ct_close(connection_ptr(conn),
-                             option) );
+    caml_release_runtime_system();
+    CS_RETCODE ret = ct_close(conn, option);
+    caml_acquire_runtime_system();
 
+    retval_inspect("ct_close", ret);
     CAMLreturn(Val_unit);
 }
 
